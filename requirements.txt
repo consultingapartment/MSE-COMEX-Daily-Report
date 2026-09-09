@@ -1,0 +1,7 @@
+requests
+pandas
+beautifulsoup4
+matplotlib
+squarify
+lxml
+html5lib
