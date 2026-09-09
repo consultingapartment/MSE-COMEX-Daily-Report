@@ -1,1 +1,36 @@
+# Энэ нүдэнд байгаа кодыг хуулж авах шаардлагагүй.
+# Энэ нь зөвхөн танд хялбар болгох үүднээс YAML файлын бүтцийг харуулж байна.
+yaml_content = """
+name: MSE Telegram Bot Daily Run
 
+on:
+  schedule:
+    # Өдөр бүр UTC 08:00 цагт (Монголын цагаар 16:00 цагт) ажиллана
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Гараар ажиллуулах товч идэвхжүүлэх
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Telegram Bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHANNEL: ${{ secrets.CHANNEL }}
+      run: python bot.py
+"""
+print("YAML файлыг амжилттай бэлдлээ. Дээрх зааврын дагуу тохируулаарай!")
