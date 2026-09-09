@@ -1,9 +1,8 @@
-yaml_content = """
 name: MSE Telegram Bot Daily Run
 
 on:
   schedule:
-    # Өдөр бүр UTC 08:00 цагт (Монголын цагаар 16:00 цагт) ажиллана
+    # Өдөр бүр UTC 06:00 цагт (Монголын цагаар 14:00 цагт) ажиллана
     - cron: '0 6 * * *'
   workflow_dispatch: # Гараар ажиллуулах товч идэвхжүүлэх
 
@@ -30,5 +29,3 @@ jobs:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         CHANNEL: ${{ secrets.CHANNEL }}
       run: python bot.py
-"""
-print("YAML файлыг амжилттай бэлдлээ. Дээрх зааврын дагуу тохируулаарай!")
