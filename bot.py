@@ -112,24 +112,14 @@ def create_heatmap(df, title):
         ax.text(rect['x'] + rect['dx']/2, rect['y'] + rect['dy']/2, label, ha='center', va='center', fontsize=font_size, color='white', fontweight='bold')
 
     plt.title(title, fontsize=16, fontweight='bold', pad=20)
+    
+    # === ЭНЭ 2 МӨРИЙГ ШИНЭЭР НЭМСЭН (MemoryError засах) ===
+    plt.xlim(0, 100)
+    plt.ylim(0, 100)
+    # =======================================================
+    
     plt.axis('off')
     plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-    plt.close()
-    buf.seek(0)
-    return buf
-
-def create_summary_chart(cleaned_dfs, trade_date):
-    amounts = {k: v['Дүн'].sum() for k, v in cleaned_dfs.items() if not v.empty}
-    if not amounts: return None
-    plt.figure(figsize=(8, 6))
-    bars = plt.bar(amounts.keys(), amounts.values(), color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
-    plt.title(f"Арилжааны бүтэц\n({trade_date})", fontsize=14, fontweight='bold')
-    plt.ylabel("Мөнгөн дүн (₮)")
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:,.0f} ₮", ha='center', va='bottom', fontweight='bold')
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     plt.close()
