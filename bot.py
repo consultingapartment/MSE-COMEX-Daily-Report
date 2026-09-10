@@ -17,13 +17,14 @@ from urllib.parse import urljoin
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# 1. ТОХИРГОО (GitHub Secrets-ээс уншина)
+# 1. ТОХИРГОО
 # ==========================================
+# GitHub Secrets-ээс автоматаар уншина
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL = os.getenv("CHANNEL", "@openburry")
 
 plt.rcParams['font.family'] = 'DejaVu Sans'
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 # ==========================================
 # 2. МХБ - ӨГӨГДӨЛ ТАТАХ
@@ -281,14 +282,14 @@ def fetch_comex_news():
 # ==========================================
 def send_telegram_photo(photo_buf, caption=""):
     if not BOT_TOKEN:
-        print("❌ АЛДАА: BOT_TOKEN олдсонгүй!")
+        print("АЛДАА: BOT_TOKEN олдсонгүй!")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     requests.post(url, files={'photo': ('chart.png', photo_buf, 'image/png')}, data={'chat_id': CHANNEL, 'caption': caption})
 
 def send_telegram_message(text):
     if not BOT_TOKEN:
-        print("❌ АЛДАА: BOT_TOKEN олдсонгүй!")
+        print("АЛДАА: BOT_TOKEN олдсонгүй!")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={'chat_id': CHANNEL, 'text': text, 'parse_mode': 'Markdown', 'disable_web_page_preview': True})
@@ -296,8 +297,8 @@ def send_telegram_message(text):
 def main():
     print("🚀 Бот ажиллаж эхэллээ...\n")
     if not BOT_TOKEN:
-        print("⚠️ АНХААР: BOT_TOKEN тохируулагдаагүй байна. GitHub Secrets-ээ шалгана уу.")
-        
+        print("⚠️ АНХААР: BOT_TOKEN хоосон байна! Secrets тохиргоогоо шалгана уу.")
+    
     # 1. МХБ МЭДЭЭЛЭЛ
     raw_data, trade_date = fetch_mse_data()
     if raw_data:
