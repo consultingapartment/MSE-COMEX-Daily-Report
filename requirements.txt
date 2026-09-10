@@ -1,7 +1,8 @@
 requests
 pandas
-beautifulsoup4
+numpy
 matplotlib
 squarify
+beautifulsoup4
 lxml
 html5lib
