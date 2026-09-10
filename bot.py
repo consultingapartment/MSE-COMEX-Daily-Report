@@ -19,7 +19,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 # 1. ТОХИРГОО
 # ==========================================
-# GitHub Secrets-ээс автоматаар уншина
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL = os.getenv("CHANNEL", "@openburry")
 
@@ -45,7 +44,9 @@ def fetch_mse_data():
         y, m, d = date_match.groups()
         trade_date = f"{y} оны {int(m)} дүгээр сарын {int(d)}-ны өдрийн"
 
-    try: dfs = pd.read_html(r.text)
+    try: 
+        # FutureWarning арилгахын тулд StringIO ашиглав
+        dfs = pd.read_html(io.StringIO(r.text))
     except ValueError: return None, None
 
     stock_tables = [df for df in dfs if 'симбол' in " ".join(str(c).lower() for c in df.columns) or 'symbol' in " ".join(str(c).lower() for c in df.columns)]
@@ -113,13 +114,29 @@ def create_heatmap(df, title):
 
     plt.title(title, fontsize=16, fontweight='bold', pad=20)
     
-    # === ЭНЭ 2 МӨРИЙГ ШИНЭЭР НЭМСЭН (MemoryError засах) ===
+    # MemoryError-ийг зассан хэсэг
     plt.xlim(0, 100)
     plt.ylim(0, 100)
-    # =======================================================
     
     plt.axis('off')
     plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf
+
+# Санамсаргүй устгагдсан байсан функцийг буцааж нэмэв
+def create_summary_chart(cleaned_dfs, trade_date):
+    amounts = {k: v['Дүн'].sum() for k, v in cleaned_dfs.items() if not v.empty}
+    if not amounts: return None
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(amounts.keys(), amounts.values(), color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+    plt.title(f"Арилжааны бүтэц\n({trade_date})", fontsize=14, fontweight='bold')
+    plt.ylabel("Мөнгөн дүн (₮)")
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:,.0f} ₮", ha='center', va='bottom', fontweight='bold')
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     plt.close()
@@ -160,7 +177,8 @@ def generate_summary_text(cleaned_dfs, trade_date):
 def parse_comex_table(url, date_str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-        dfs = pd.read_html(r.text, header=None)
+        # FutureWarning арилгахын тулд StringIO ашиглав
+        dfs = pd.read_html(io.StringIO(r.text), header=None)
         if not dfs: return None
         df = dfs[0].dropna(how='all')
         
