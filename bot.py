@@ -1,9 +1,7 @@
 # ==========================================
 # МХБ & COMEX ӨДРИЙН АРИЛЖААНЫ ТОЙМ - TELEGRAM BOT
 # ==========================================
-# АНХААРАХ: Colab дээр хамгийн эхлээд энэ кодыг ажиллуулж шаардлагатай санг суулгана уу:
-# !pip install squarify
-
+import os
 import requests
 import pandas as pd
 import numpy as np
@@ -19,13 +17,13 @@ from urllib.parse import urljoin
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# 1. ТОХИРГОО
+# 1. ТОХИРГОО (GitHub Secrets-ээс уншина)
 # ==========================================
-BOT_TOKEN = "ЭНД_ШИНЭ_ТОКЕН_ТАВЬ"
-CHANNEL = "@openburry"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL = os.getenv("CHANNEL", "@openburry")
 
 plt.rcParams['font.family'] = 'DejaVu Sans'
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
 # ==========================================
 # 2. МХБ - ӨГӨГДӨЛ ТАТАХ
@@ -171,7 +169,7 @@ def generate_summary_text(cleaned_dfs, trade_date):
 def parse_comex_table(url, date_str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-        dfs = pd.read_html(r.text, header=None) # Хүснэгтийг шууд задлах
+        dfs = pd.read_html(r.text, header=None)
         if not dfs: return None
         df = dfs[0].dropna(how='all')
         
@@ -180,7 +178,6 @@ def parse_comex_table(url, date_str):
         total_usd = 0
         total_cny = 0
         
-        # Хүснэгтийн багана бүрээр (арилжаа тус бүрээр) гүйх
         for col in range(1, len(df.columns)):
             info = {}
             for _, row in df.iterrows():
@@ -209,7 +206,6 @@ def parse_comex_table(url, date_str):
                         
             if 'company' in info: trades.append(info)
             
-        # TELEGRAM-Д ЗОРИУЛАН ЗАГВАРЧЛАХ
         text = f"📊 *COMEX — {date_str} АРИЛЖААНЫ ТОЙМ*\n\n"
         text += f"📦 *Нийт борлуулалт:* {total_tons:,.0f} тонн\n"
         
@@ -228,12 +224,10 @@ def parse_comex_table(url, date_str):
             price = t.get('price', '-')
             growth = str(t.get('growth', '0%'))
             
-            # Өсөлтийг гоё болгох
             if '0%' in growth or growth == '0': growth_str = "➖ Өөрчлөлтгүй"
             elif '-' in growth: growth_str = f"▼ {growth} буурсан"
             else: growth_str = f"▲ +{growth.replace('+','')} өссөн"
                 
-            # Үнийн дүнг товчлох ($10.8 сая)
             item_total = t.get('total', '-')
             amt_m = re.search(r'([\d,\.]+)\s*(USD|CNY|MNT)', item_total, re.IGNORECASE)
             if amt_m:
@@ -273,12 +267,10 @@ def fetch_comex_news():
                 link = urljoin("https://comex.mse.mn", a['href'])
                 date_formatted = today.strftime("%Y.%m.%d")
                 
-                # Мэдээг олмогц линк рүү нь орж хүснэгтийг нь уншуулах
                 print(f"   ✅ Мэдээ олдсон. Хүснэгт татаж байна...")
                 parsed_text = parse_comex_table(link, date_formatted)
                 
                 if parsed_text: return parsed_text
-                # Хэрэв хүснэгт алдаа заавал ядаж линкийг нь буцаана
                 return f"📊 *COMEX (Уул уурхай)*\n\n{title}\n\n🔗 [Дэлгэрэнгүй унших]({link})"
     except Exception as e:
         print(f"❌ COMEX алдаа: {e}")
@@ -288,16 +280,24 @@ def fetch_comex_news():
 # 7. TELEGRAM-Д ИЛГЭЭХ & ҮНДСЭН ҮЙЛДЭЛ
 # ==========================================
 def send_telegram_photo(photo_buf, caption=""):
+    if not BOT_TOKEN:
+        print("❌ АЛДАА: BOT_TOKEN олдсонгүй!")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     requests.post(url, files={'photo': ('chart.png', photo_buf, 'image/png')}, data={'chat_id': CHANNEL, 'caption': caption})
 
 def send_telegram_message(text):
+    if not BOT_TOKEN:
+        print("❌ АЛДАА: BOT_TOKEN олдсонгүй!")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={'chat_id': CHANNEL, 'text': text, 'parse_mode': 'Markdown', 'disable_web_page_preview': True})
 
 def main():
     print("🚀 Бот ажиллаж эхэллээ...\n")
-    
+    if not BOT_TOKEN:
+        print("⚠️ АНХААР: BOT_TOKEN тохируулагдаагүй байна. GitHub Secrets-ээ шалгана уу.")
+        
     # 1. МХБ МЭДЭЭЛЭЛ
     raw_data, trade_date = fetch_mse_data()
     if raw_data:
