@@ -2,9 +2,9 @@ name: MSE Telegram Bot Daily Run
 
 on:
   schedule:
-    # Өдөр бүр UTC 08:00 цагт (Монголын цагаар 16:00 цагт) ажиллана
-    - cron: '0 8 * * *'
-  workflow_dispatch: # Гараар ажиллуулах товч идэвхжүүлэх
+    # Өдөр бүр UTC 08:15 цагт (Монголын цагаар 16:15 цагт) ажиллана. 
+    - cron: '15 8 * * *'
+  workflow_dispatch: # Гараар ажиллуулах товч
 
 jobs:
   run-bot:
