@@ -13,6 +13,8 @@ import urllib3
 import datetime
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import asyncio
+from playwright.async_api import async_playwright
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -26,27 +28,34 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 # ==========================================
-# 2. МХБ - ӨГӨГДӨЛ ТАТАХ
+# 2. МХБ - ВИРТУАЛ ХӨТЧӨӨР ӨГӨГДӨЛ ТАТАХ
 # ==========================================
+async def fetch_mse_html_async():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("https://mse.mn/todays-trade", wait_until="networkidle")
+        await page.wait_for_timeout(3000) # Хүснэгт зурагдахыг хүлээх
+        html = await page.content()
+        await browser.close()
+        return html
+
 def fetch_mse_data():
-    url = "https://old.mse.mn/mn/trade_today/23"
-    print("🌐 MSE-ээс мэдээлэл татаж байна...")
+    print("🌐 Виртуал хөтчөөр (Playwright) MSE-ээс мэдээлэл татаж байна...")
     try:
-        r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-        if r.status_code != 200: return None, None
+        html = asyncio.run(fetch_mse_html_async())
     except Exception as e:
-        print(f"❌ Сүлжээний алдаа: {e}")
+        print(f"❌ Виртуал хөтөч нээхэд алдаа гарлаа: {e}")
         return None, None
     
     trade_date = "Өнөөдрийн"
-    date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', r.text)
+    date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', html)
     if date_match:
         y, m, d = date_match.groups()
         trade_date = f"{y} оны {int(m)} дүгээр сарын {int(d)}-ны өдрийн"
 
     try: 
-        # FutureWarning арилгахын тулд StringIO ашиглав
-        dfs = pd.read_html(io.StringIO(r.text))
+        dfs = pd.read_html(io.StringIO(html))
     except ValueError: return None, None
 
     stock_tables = [df for df in dfs if 'симбол' in " ".join(str(c).lower() for c in df.columns) or 'symbol' in " ".join(str(c).lower() for c in df.columns)]
@@ -113,11 +122,8 @@ def create_heatmap(df, title):
         ax.text(rect['x'] + rect['dx']/2, rect['y'] + rect['dy']/2, label, ha='center', va='center', fontsize=font_size, color='white', fontweight='bold')
 
     plt.title(title, fontsize=16, fontweight='bold', pad=20)
-    
-    # MemoryError-ийг зассан хэсэг
     plt.xlim(0, 100)
     plt.ylim(0, 100)
-    
     plt.axis('off')
     plt.tight_layout()
     buf = io.BytesIO()
@@ -126,7 +132,6 @@ def create_heatmap(df, title):
     buf.seek(0)
     return buf
 
-# Санамсаргүй устгагдсан байсан функцийг буцааж нэмэв
 def create_summary_chart(cleaned_dfs, trade_date):
     amounts = {k: v['Дүн'].sum() for k, v in cleaned_dfs.items() if not v.empty}
     if not amounts: return None
@@ -177,7 +182,6 @@ def generate_summary_text(cleaned_dfs, trade_date):
 def parse_comex_table(url, date_str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-        # FutureWarning арилгахын тулд StringIO ашиглав
         dfs = pd.read_html(io.StringIO(r.text), header=None)
         if not dfs: return None
         df = dfs[0].dropna(how='all')
@@ -317,10 +321,10 @@ def main():
         if chart1: send_telegram_photo(chart1, f"📊 {trade_date} арилжааны бүтэц")
         send_telegram_message(generate_summary_text(cleaned_dfs, trade_date))
         
-        if not cleaned_dfs['I'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['I'], f"🟢 I АНГИЛАЛ ({trade_date})"), "🟢 I ангиллын хөдөлгөөн")
-        if not cleaned_dfs['II'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['II'], f"🔵 II АНГИЛАЛ ({trade_date})"), "🔵 II ангиллын хөдөлгөөн")
-        if not cleaned_dfs['III'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['III'], f"🟣 III АНГИЛАЛ ({trade_date})"), "🟣 III ангиллын хөдөлгөөн")
-        if not cleaned_dfs['Сан'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['Сан'], f"🏦 ХӨРӨНГӨ ОРУУЛАЛТЫН САН ({trade_date})"), "🏦 Сангийн хөдөлгөөн")
+        if not cleaned_dfs['I'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['I'], f"I АНГИЛАЛ ({trade_date})"), "🟢 I ангиллын хөдөлгөөн")
+        if not cleaned_dfs['II'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['II'], f"II АНГИЛАЛ ({trade_date})"), "🔵 II ангиллын хөдөлгөөн")
+        if not cleaned_dfs['III'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['III'], f"III АНГИЛАЛ ({trade_date})"), "🟣 III ангиллын хөдөлгөөн")
+        if not cleaned_dfs['Сан'].empty: send_telegram_photo(create_heatmap(cleaned_dfs['Сан'], f"ХӨРӨНГӨ ОРУУЛАЛТЫН САН ({trade_date})"), "🏦 Сангийн хөдөлгөөн")
         print("✅ МХБ-ийн 6 пост амжилттай орлоо.")
 
     # 2. COMEX МЭДЭЭЛЭЛ
