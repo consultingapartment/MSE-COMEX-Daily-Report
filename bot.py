@@ -45,29 +45,41 @@ def fetch_mse_data():
         y, m, d = date_match.groups()
         trade_date = f"{y} оны {int(m)} дүгээр сарын {int(d)}-ны өдрийн"
 
-    pattern = r'\{[^{}]*?"(?:companySymbol|bondSymbol)"[^{}]*?\}'
-    matches = re.findall(pattern, html)
+    # HTML доторх escape хийгдсэн тэмдэгтүүдийг цэвэрлэх
+    html_clean = html.replace('\\"', '"').replace('\\\\', '\\')
+    
+    # Хувьцаа эсвэл Бондын мэдээлэл агуулсан JSON объектыг барих Regex
+    pattern = r'\{[^{}]*?(?:"companySymbol"|"bondSymbol")[^{}]*?\}'
+    matches = re.findall(pattern, html_clean)
     
     data = []
     for m in matches:
         try:
-            clean_json = m.replace('\\"', '"').replace('\\\\', '\\')
-            obj = json.loads(clean_json)
+            obj = json.loads(m)
             
             ticker = obj.get("companySymbol") or obj.get("bondSymbol", "Тодорхойгүй")
+            if ticker == "Тодорхойгүй":
+                continue
+
             turnover_str = str(obj.get("Turnover", "0")).replace(",", "").replace(" ", "")
             volume_str = str(obj.get("Volume", "0")).replace(",", "").replace(" ", "")
-            change = float(obj.get("changePercentage", 0))
+            change_str = str(obj.get("changePercentage", "0")).replace(",", "")
             
-            turnover = float(turnover_str) if turnover_str else 0.0
-            volume = float(volume_str) if volume_str else 0.0
+            try: turnover = float(turnover_str)
+            except: turnover = 0.0
+            
+            try: volume = float(volume_str)
+            except: volume = 0.0
+
+            try: change = float(change_str)
+            except: change = 0.0
             
             if turnover > 0:
                 # 📌 ТӨРЛҮҮДИЙГ ЯЛГАХ
                 code_val = obj.get("code", 0)
                 is_bond = "bondSymbol" in obj
                 is_block = "OpeningPrice" not in obj and not is_bond
-                is_abs = isinstance(code_val, int) and code_val >= 5000
+                is_abs = isinstance(code_val, int) and (code_val >= 5000 or str(code_val).startswith('5'))
                 
                 if is_bond: trade_type = "Компанийн бонд"
                 elif is_block: trade_type = "Багцын арилжаа"
@@ -88,6 +100,8 @@ def fetch_mse_data():
     
     if not df.empty:
         df = df.groupby(['Тикер', 'Өөрчлөлт', 'Төрөл'], as_index=False).agg({'Дүн': 'sum', 'Ширхэг': 'sum'})
+    else:
+        print("⚠️ МХБ-ийн хуудаснаас дата олдсонгүй.")
         
     return df, trade_date
 
@@ -128,7 +142,7 @@ def create_heatmap(df, title):
 # ==========================================
 def generate_summary_text(df, trade_date):
     if df.empty:
-        return "📊 Өнөөдрийн арилжааны дата олдсонгүй эсвэл арилжаа явагдаагүй байна."
+        return ""
         
     total_amount = df['Дүн'].sum()
     total_qty = df['Ширхэг'].sum()
@@ -137,21 +151,18 @@ def generate_summary_text(df, trade_date):
     text += f"💰 Нийт арилжаа: {total_amount:,.0f} ₮\n"
     text += f"📦 Нийт үнэт цаас: {total_qty:,.0f} ширхэг\n\n"
     
-    # 📌 АРИЛЖААНЫ БҮТЦИЙГ ЗАДАЛЖ ХАРУУЛАХ
     text += "📝 *Арилжааны бүтэц:*\n"
     grouped = df.groupby('Төрөл')['Дүн'].sum().sort_values(ascending=False)
     for ttype, amt in grouped.items():
         emoji = "🏢" if ttype == "Багцын арилжаа" else "📄" if ttype == "Компанийн бонд" else "📜" if ttype == "ХБҮЦ" else "📈"
         text += f"▪️ {emoji} {ttype}: {amt:,.0f} ₮\n"
     
-    # 🏆 TOP 10 (Ард нь ямар төрлийн арилжаа болохыг хаалтанд бичиж өгнө)
     text += "\n🏆 *Хамгийн их үнийн дүнтэй TOP 10:*\n"
     top10 = df.sort_values('Дүн', ascending=False).head(10)
     for i, (_, r) in enumerate(top10.iterrows(), 1): 
         tag = f" _({r['Төрөл']})_" if r['Төрөл'] != "Хувьцаа & Сан" else ""
         text += f"{i}. {r['Тикер']} — {r['Дүн']:,.0f} ₮{tag}\n"
             
-    # Өсөлт бууралтыг зөвхөн энгийн Хувьцаан дээр гаргах
     stocks_df = df[df['Төрөл'] == "Хувьцаа & Сан"]
     if not stocks_df.empty:
         gainers = stocks_df[stocks_df['Өөрчлөлт'] > 0].sort_values('Өөрчлөлт', ascending=False).head(3)
@@ -304,11 +315,14 @@ def main():
     # 1. МХБ МЭДЭЭЛЭЛ
     mse_df, trade_date = fetch_mse_data()
     
+    # Дата хоосон биш үед л Telegram руу илгээнэ. Алдааны мессеж явуулахгүй.
     if not mse_df.empty:
         print(f"🧹 МХБ Мэдээллийг боловсруулж байна... ({trade_date})")
         
         # Нийт арилжааны текст мэдээлэл илгээх
-        send_telegram_message(generate_summary_text(mse_df, trade_date))
+        summary = generate_summary_text(mse_df, trade_date)
+        if summary:
+            send_telegram_message(summary)
         
         # Бүх хувьцааны Heatmap зураг
         heatmap_buf = create_heatmap(mse_df, f"МХБ НЭГДСЭН ЗУРАГ ({trade_date})")
@@ -316,6 +330,8 @@ def main():
             send_telegram_photo(heatmap_buf, f"📊 МХБ-ийн бүх арилжааны хөдөлгөөн")
                 
         print("✅ МХБ-ийн пост амжилттай орлоо.")
+    else:
+        print("⚠️ МХБ өгөгдөл олдсонгүй. Telegram-д пост хийгдэхгүй.")
 
     # 2. COMEX МЭДЭЭЛЭЛ
     comex_msg = fetch_comex_news()
