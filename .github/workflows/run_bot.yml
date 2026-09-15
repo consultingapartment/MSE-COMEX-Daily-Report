@@ -2,7 +2,7 @@ name: MSE Telegram Bot Daily Run
 
 on:
   schedule:
-# Зөвхөн ажлын өдрүүдэд (Даваа - Баасан) UTC 08:15 буюу Монголын 16:15 цагт ажиллана.
+    # Зөвхөн ажлын өдрүүдэд (Даваа - Баасан) UTC 08:15 буюу Монголын 16:15 цагт ажиллана.
     - cron: '15 8 * * 1-5'
   workflow_dispatch: 
 
@@ -12,12 +12,13 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4 # v3 -> v4 руу шинэчлэв
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # v4 -> v5 рүү шинэчлэв
       with:
         python-version: '3.10'
+        cache: 'pip' # Package-уудыг cache хийж дараагийн удаа хурдан татна
 
     - name: Install dependencies
       run: |
