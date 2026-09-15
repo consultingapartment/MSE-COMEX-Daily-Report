@@ -1,19 +1,21 @@
 # ==========================================
-# МХБ ӨДРИЙН АРИЛЖААНЫ ТОЙМ - TELEGRAM BOT (БҮРЭН ЭХЭЛРЭХ КОД)
+# МХБ & COMEX ӨДРИЙН АРИЛЖААНЫ ТОЙМ - TELEGRAM BOT (БҮРЭН КОД)
 # ==========================================
 
 import os
 import requests
 import json
 import re
+import io
+import urllib3
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import squarify
-import io
-import urllib3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -27,6 +29,7 @@ CHANNEL = os.getenv("CHANNEL", "@openburry")
 plt.rcParams["font.family"] = "DejaVu Sans"
 
 MSE_URL = "https://mse.mn/todays-trade"
+COMEX_BASE_URL = "https://comex.mse.mn"
 
 NEXT_ACTION = "6d867ebd99fb6edef2f9537b22668cd0c00a71c2"
 
@@ -79,7 +82,7 @@ COOKIES = {
 }
 
 # ==========================================
-# 2. MSE DATA ENDPOINT-ҮҮД
+# 2. MSE DATA ENDPOINTS
 # ==========================================
 
 DATA_ENDPOINTS = [
@@ -96,10 +99,6 @@ DATA_ENDPOINTS = [
     ("tradingAON", "AON арилжаа", "MNT"),
 ]
 
-# ==========================================
-# 3. COUNT ENDPOINT-ҮҮД
-# ==========================================
-
 COUNT_ENDPOINTS = [
     ("tradingStatus1Count", "Хувьцаат компанийн I ангилал"),
     ("tradingStatus2Count", "Хувьцаат компанийн II ангилал"),
@@ -114,7 +113,7 @@ COUNT_ENDPOINTS = [
 ]
 
 # ==========================================
-# 4. ТООН УТГА ЦЭВЭРЛЭХ
+# 3. ТООН УТГА ЦЭВЭРЛЭХ & RSC PARSER
 # ==========================================
 
 def to_number(value):
@@ -125,21 +124,11 @@ def to_number(value):
     text = str(value).strip()
     if not text:
         return 0.0
-    text = (
-        text
-        .replace(",", "")
-        .replace(" ", "")
-        .replace("₮", "")
-        .replace("$", "")
-    )
+    text = text.replace(",", "").replace(" ", "").replace("₮", "").replace("$", "")
     try:
         return float(text)
     except Exception:
         return 0.0
-
-# ==========================================
-# 5. RSC RESPONSE PARSER
-# ==========================================
 
 def parse_rsc_response(response_text):
     lines = response_text.splitlines()
@@ -159,36 +148,158 @@ def parse_rsc_response(response_text):
                 pass
     return None
 
-# ==========================================
-# 6. НЭГ SERVER ACTION ДУУДАХ
-# ==========================================
-
 def call_mse_endpoint(session, endpoint):
     payload = json.dumps([
         {
             "url": endpoint,
             "parameter": "?lang=mn",
-            "config": {
-                "hasToken": False
-            }
+            "config": {"hasToken": False}
         }
     ])
     response = session.post(
-        MSE_URL,
-        headers=HEADERS,
-        cookies=COOKIES,
-        data=payload,
-        timeout=30
+        MSE_URL, headers=HEADERS, cookies=COOKIES, data=payload, timeout=30
     )
     if response.status_code != 200:
-        raise RuntimeError(
-            f"HTTP {response.status_code}: {response.text[:500]}"
-        )
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
     parsed = parse_rsc_response(response.text)
     return response, parsed
 
 # ==========================================
-# 7. БҮХ DATA + COUNT ТАТАХ
+# 4. COMEX (УУЛ УУРХАЙН БИРЖ) ТАТАХ ХЭСЭГ
+# ==========================================
+
+def parse_comex_table(url, date_str):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
+        dfs = pd.read_html(io.StringIO(r.text), header=None)
+        if not dfs: 
+            return None
+        df = dfs[0].dropna(how='all')
+        
+        trades = []
+        total_tons = 0
+        total_usd = 0
+        total_cny = 0
+        
+        for col in range(1, len(df.columns)):
+            info = {}
+            for _, row in df.iterrows():
+                key = str(row[0]).lower()
+                val = str(row[col])
+                if val == 'nan' or val == 'None': 
+                    continue
+                
+                if 'худалдагч' in key and 'нэр' in key: 
+                    info['company'] = val
+                elif 'ангилал' in key: 
+                    info['type'] = val.split('/')[0].strip()
+                elif 'хэлцэл хийгдсэн үнэ' in key: 
+                    info['price'] = val
+                elif 'өсөлтийн хувь' in key: 
+                    info['growth'] = val
+                elif 'нийт үнийн дүн' in key:
+                    info['total'] = val
+                    amt_m = re.search(r'([\d,\.]+)\s*(USD|CNY|MNT)', val, re.IGNORECASE)
+                    if amt_m:
+                        amt = float(amt_m.group(1).replace(',', ''))
+                        cur = amt_m.group(2).upper()
+                        if cur == 'USD': 
+                            total_usd += amt
+                        if cur == 'CNY': 
+                            total_cny += amt
+                elif 'хэмжээ' in key and 'тонн' in key:
+                    ton_m = re.search(r'(\d+)\s*тонн', val, re.IGNORECASE)
+                    if ton_m:
+                        tons = float(ton_m.group(1))
+                        info['tons'] = tons
+                        total_tons += tons
+                        
+            if 'company' in info: 
+                trades.append(info)
+            
+        text = f"📊 *COMEX — {date_str} УУЛ УУРХАЙН АРИЛЖААНЫ ТОЙМ*\n\n"
+        text += f"📦 *Нийт борлуулалт:* {total_tons:,.0f} тонн\n"
+        
+        val_strs = []
+        if total_usd > 0: 
+            val_strs.append(f"${total_usd / 1e6:,.1f} сая")
+        if total_cny > 0: 
+            val_strs.append(f"{total_cny / 1e6:,.1f} сая CNY")
+        if val_strs: 
+            text += f"💰 *Үнийн дүн:* {' | '.join(val_strs)}\n"
+        text += "\n" + "—"*20 + "\n\n"
+        
+        emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
+        for i, t in enumerate(trades):
+            emoji = emojis[i] if i < len(emojis) else "🔹"
+            comp = t.get('company', 'Тодорхойгүй')
+            typ = t.get('type', 'Бүтээгдэхүүн')
+            qty = t.get('tons', 0)
+            price = t.get('price', '-')
+            growth = str(t.get('growth', '0%'))
+            
+            if '0%' in growth or growth == '0': 
+                growth_str = "➖ Өөрчлөлтгүй"
+            elif '-' in growth: 
+                growth_str = f"▼ {growth} буурсан"
+            else: 
+                growth_str = f"▲ +{growth.replace('+','')} өссөн"
+                
+            item_total = t.get('total', '-')
+            amt_m = re.search(r'([\d,\.]+)\s*(USD|CNY|MNT)', item_total, re.IGNORECASE)
+            if amt_m:
+                amt = float(amt_m.group(1).replace(',', ''))
+                cur = amt_m.group(2).upper()
+                if cur == 'USD': 
+                    item_total = f"${amt / 1e6:,.1f} сая"
+                elif cur == 'CNY': 
+                    item_total = f"{amt / 1e6:,.1f} сая CNY"
+            
+            text += f"{emoji} *{comp}* | _{typ}_\n"
+            text += f"▪️ *Хэмжээ:* {qty:,.0f} тонн\n"
+            text += f"▪️ *Хаалтын ханш:* {price} ({growth_str})\n"
+            text += f"▪️ *Нийт дүн:* {item_total}\n\n"
+            
+        text += f"🔗 [Дэлгэрэнгүй унших]({url})"
+        return text
+    except Exception as e:
+        print(f"COMEX Хүснэгт задлахад алдаа: {e}")
+        return None
+
+def fetch_comex_news():
+    print("\n🔎 COMEX (Уул уурхайн бирж) шалгаж байна...")
+    url = f"{COMEX_BASE_URL}/show_trading_infos"
+    today = datetime.now()
+    target_date_str = f"{today.month:02d}-р сарын {today.day:02d} өдрийн"
+    
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
+        if r.status_code != 200: 
+            return None
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        for a in soup.find_all('a', href=True):
+            title = re.sub(r"\s+", " ", a.get_text()).strip()
+            title_lower = title.lower()
+            if title_lower == "арилжааны мэдээлэл" or len(title) < 20: 
+                continue
+                
+            if "уул уурхайн бүтээгдэхүүний арилжааны мэдээ" in title_lower and target_date_str.lower() in title_lower:
+                link = urljoin(COMEX_BASE_URL, a['href'])
+                date_formatted = today.strftime("%Y.%m.%d")
+                
+                print(f"   ✅ COMEX мэдээ олдлоо. Хүснэгт татаж байна...")
+                parsed_text = parse_comex_table(link, date_formatted)
+                
+                if parsed_text: 
+                    return parsed_text
+                return f"📊 *COMEX (Уул уурхай)*\n\n{title}\n\n🔗 [Дэлгэрэнгүй унших]({link})"
+    except Exception as e:
+        print(f"❌ COMEX алдаа: {e}")
+    return None
+
+# ==========================================
+# 5. МХБ ДАТА ТАТАХ & СУУРЬ ЛОГИК
 # ==========================================
 
 def fetch_mse_data():
@@ -207,7 +318,6 @@ def fetch_mse_data():
         try:
             response, parsed = call_mse_endpoint(session, endpoint)
             if not isinstance(parsed, list):
-                print(f"   ⚠️ LIST биш: {type(parsed).__name__}")
                 validation.append({
                     "endpoint": endpoint, "category": category,
                     "expected": None, "actual": 0, "status": "EMPTY/NOT_LIST"
@@ -215,8 +325,6 @@ def fetch_mse_data():
                 continue
 
             actual_count = len(parsed)
-            print(f"   HTTP={response.status_code} SIZE={len(response.content):,} ROWS={actual_count}")
-
             validation.append({
                 "endpoint": endpoint, "category": category,
                 "expected": None, "actual": actual_count, "status": "OK"
@@ -260,7 +368,6 @@ def fetch_mse_data():
                     "Зарах тоо": to_number(obj.get("SellOrderQty")),
                     "Зарах үнэ": to_number(obj.get("LowestOfferPrice")),
                 })
-
         except Exception as e:
             print(f"   ❌ АЛДАА: {e}")
             validation.append({
@@ -270,60 +377,21 @@ def fetch_mse_data():
 
     df = pd.DataFrame(all_records)
 
-    print("\n" + "=" * 70)
-    print("COUNT ENDPOINT-ҮҮДИЙН ШАЛГАЛТ")
-    print("=" * 70)
-
     count_data = {}
     for count_endpoint, category in COUNT_ENDPOINTS:
-        print(f"\n{count_endpoint:<28} {category}")
         try:
             response, parsed = call_mse_endpoint(session, count_endpoint)
             if not isinstance(parsed, dict):
-                print("   ⚠️ COUNT response object биш")
                 continue
-
             company_count = int(to_number(parsed.get("company_count")))
             volume = to_number(parsed.get("volume"))
             turnover = to_number(parsed.get("turnover"))
-
             count_data[count_endpoint] = {
                 "category": category, "company_count": company_count,
                 "volume": volume, "turnover": turnover,
             }
-
-            print(f"   Company: {company_count:,}")
-            print(f"   Volume : {volume:,.0f}")
-            print(f"   Turnover: {turnover:,.2f}")
-
-            data_endpoint = count_endpoint.replace("Count", "")
-            if not df.empty:
-                subset = df[df["Endpoint"] == data_endpoint]
-                actual_company_count = len(subset)
-                actual_volume = subset["Ширхэг"].sum()
-                actual_turnover = subset["Дүн"].sum()
-            else:
-                actual_company_count, actual_volume, actual_turnover = 0, 0, 0
-
-            company_ok = (actual_company_count == company_count)
-            volume_ok = (abs(actual_volume - volume) < 0.01)
-            turnover_ok = (abs(actual_turnover - turnover) < 0.01)
-
-            print("   Company check : " + ("✅" if company_ok else "❌"))
-            print("   Volume check  : " + ("✅" if volume_ok else "❌"))
-            print("   Turnover check: " + ("✅" if turnover_ok else "❌"))
-
-            for item in validation:
-                if item["endpoint"] == data_endpoint:
-                    item["expected"] = company_count
-                    item["count_check"] = "OK" if company_ok else "MISMATCH"
-                    item["count_volume"] = volume
-                    item["actual_volume"] = actual_volume
-                    item["count_turnover"] = turnover
-                    item["actual_turnover"] = actual_turnover
-                    break
-        except Exception as e:
-            print(f"   ❌ COUNT ERROR: {e}")
+        except Exception:
+            pass
 
     mn_now = datetime.now(ZoneInfo("Asia/Ulaanbaatar"))
     trade_date = f"{mn_now.year} ОНЫ {mn_now.month} ДҮГЭЭР САРЫН {mn_now.day}-НЫ ӨДРИЙН"
@@ -331,7 +399,7 @@ def fetch_mse_data():
     return df, trade_date, count_data, validation_df
 
 # ==========================================
-# 8. TEXT SUMMARY (БҮХ БҮЛГИЙГ БҮРЭН БАГБААСАН ЗАГВАР)
+# 6. TEXT SUMMARY (MSE ТОЙМ)
 # ==========================================
 
 def generate_summary_text(df, trade_date, count_data):
@@ -378,7 +446,7 @@ def generate_summary_text(df, trade_date, count_data):
 
     losers = stocks_and_funds[stocks_and_funds["Өөрчлөлт %"] < 0].sort_values("Өөрчлөлт %", ascending=True).head(3)
     if not losers.empty:
-        text += "📉 *Хамгийн их бууралттай:*\n"
+        text += "📉 *Хамгийн их бууралттэй:*\n"
         for _, row in losers.iterrows():
             text += f"🟥 {row['Тикер']} {row['Өөрчлөлт %']:.2f}%\n"
         text += "\n"
@@ -398,7 +466,7 @@ def generate_summary_text(df, trade_date, count_data):
         text += f"▪️ Нийт үнийн дүн: {bonds_df['Дүн'].sum():,.0f} ₮\n\n"
 
     usd_bonds = df[df["Ангилал"] == "Компанийн бондын хоёрдогч зах зээл USD"]
-    if not usd_bonds.empty and usd_bonds["Дүн"].sum() > 0:
+    if not usd_bonds.empty and usd_bonds['Дүн'].sum() > 0:
         text += "💵 *Компанийн бонд (USD):*\n"
         text += f"▪️ Тоо ширхэг: {usd_bonds['Ширхэг'].sum():,.0f}\n"
         text += f"▪️ Нийт үнийн дүн: ${usd_bonds['Дүн'].sum():,.2f}\n\n"
@@ -436,7 +504,7 @@ def generate_summary_text(df, trade_date, count_data):
     return text
 
 # ==========================================
-# 9. HEATMAP ЗУРАГ БЭЛТГЭХ
+# 7. HEATMAP ЗУРАГ БЭЛТГЭХ
 # ==========================================
 
 def create_heatmap(df, title):
@@ -502,7 +570,7 @@ def create_heatmap(df, title):
     return buf
 
 # ==========================================
-# 10. TELEGRAM PHOTO
+# 8. TELEGRAM ИЛГЭЭХ ФУНКЦҮҮД
 # ==========================================
 
 def send_telegram_photo(photo_buf, caption=""):
@@ -517,15 +585,10 @@ def send_telegram_photo(photo_buf, caption=""):
             data={"chat_id": CHANNEL, "caption": caption},
             timeout=30
         )
-        print("Telegram photo:", response.status_code)
         return response.ok
     except Exception as e:
         print("❌ Telegram photo error:", e)
         return False
-
-# ==========================================
-# 11. TELEGRAM MESSAGE
-# ==========================================
 
 def send_telegram_message(text):
     if not BOT_TOKEN:
@@ -543,74 +606,42 @@ def send_telegram_message(text):
             },
             timeout=30
         )
-        print("Telegram message:", response.status_code)
         if not response.ok:
-            print(response.text[:1000])
+            print("Telegram error text:", response.text[:1000])
         return response.ok
     except Exception as e:
         print("❌ Telegram message error:", e)
         return False
 
 # ==========================================
-# 12. VALIDATION ХЭВЛЭХ
-# ==========================================
-
-def print_validation(validation_df):
-    print("\n" + "=" * 90 + "\nMSE DATA VALIDATION\n" + "=" * 90)
-    if validation_df.empty:
-        print("Validation data байхгүй.")
-        return
-    for _, row in validation_df.iterrows():
-        endpoint = row["endpoint"]
-        expected = row.get("expected", None)
-        actual = row.get("actual", 0)
-        check = row.get("count_check", "-")
-        print(f"{endpoint:<28} ROWS={actual:<4} COUNT={expected!s:<4} {check}")
-
-# ==========================================
-# 13. CSV-Д ХАДГАЛАХ
-# ==========================================
-
-def save_local_data(df, validation_df, trade_date):
-    timestamp = datetime.now(ZoneInfo("Asia/Ulaanbaatar")).strftime("%Y%m%d_%H%M%S")
-    csv_file = f"mse_today_{timestamp}.csv"
-    validation_file = f"mse_validation_{timestamp}.csv"
-    
-    df.to_csv(csv_file, index=False, encoding="utf-8-sig")
-    validation_df.to_csv(validation_file, index=False, encoding="utf-8-sig")
-    print(f"\n💾 Data CSV: {csv_file}\n💾 Validation CSV: {validation_file}")
-    return csv_file, validation_file
-
-# ==========================================
-# 14. MAIN
+# 9. MAIN (ГЭРЧИЛГЭЭ БОЛОН ИЛГЭЭХ УРСГАЛ)
 # ==========================================
 
 def main():
-    print("\n🚀 МХБ ӨДРИЙН АРИЛЖААНЫ БОТ ЭХЭЛЛЭЭ...\n")
+    print("\n🚀 МХБ & COMEX ӨДРИЙН АРИЛЖААНЫ БОТ ЭХЭЛЛЭЭ...\n")
 
+    # 1. Үндсэн МХБ дата татах
     df, trade_date, count_data, validation_df = fetch_mse_data()
-    print_validation(validation_df)
 
     if df.empty:
         print("\n❌ МХБ өгөгдөл олдсонгүй.")
         send_telegram_message("⚠️ МХБ-ийн өнөөдрийн арилжааны дата олдсонгүй.")
-        return
+    else:
+        # МХБ Мэдээлэл явуулах
+        summary_text = generate_summary_text(df, trade_date, count_data)
+        send_telegram_message(summary_text)
 
-    print("\n" + "=" * 70 + "\nНЭГДСЭН DATA\n" + "=" * 70)
-    print(f"Нийт мөр: {len(df):,}")
-    print(f"Нийт MNT дүн: {df[df['Валют'] == 'MNT']['Дүн'].sum():,.2f} ₮")
-    print(f"Нийт USD дүн: {df[df['Валют'] == 'USD']['Дүн'].sum():,.2f} USD")
+        heatmap_buf = create_heatmap(df, f"МХБ НЭГДСЭН ЗУРАГ ({trade_date})")
+        if heatmap_buf:
+            send_telegram_photo(heatmap_buf, "📊 МХБ-ийн хувьцааны арилжааны хөдөлгөөн")
 
-    summary_text = generate_summary_text(df, trade_date, count_data)
-    print("\n" + "=" * 70 + "\nTELEGRAM SUMMARY\n" + "=" * 70)
-    print(summary_text)
-
-    save_local_data(df, validation_df, trade_date)
-    send_telegram_message(summary_text)
-
-    heatmap_buf = create_heatmap(df, f"МХБ НЭГДСЭН ЗУРАГ ({trade_date})")
-    if heatmap_buf:
-        send_telegram_photo(heatmap_buf, "📊 МХБ-ийн хувьцааны арилжааны хөдөлгөөн")
+    # 2. COMEX Уул уурхайн биржийн мэдээг шалгаж явуулах
+    comex_text = fetch_comex_news()
+    if comex_text:
+        print("   ✅ COMEX мэдээ Телеграм руу илгээгдэж байна...")
+        send_telegram_message(comex_text)
+    else:
+        print("   ℹ️ Өнөөдрийн COMEX мэдээ одоогоор гараагүй эсвэл олдсонгүй.")
 
     print("\n" + "=" * 70 + "\n✅ АЖИЛЛАЖ ДУУСЛАА\n" + "=" * 70)
 
