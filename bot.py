@@ -39,22 +39,18 @@ def fetch_mse_data():
         print(f"❌ МХБ сайттай холбогдоход алдаа гарлаа: {e}")
         return pd.DataFrame(), "Өнөөдрийн"
         
-    # Огноо олох
     trade_date = "Өнөөдрийн"
     date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', html)
     if date_match:
         y, m, d = date_match.groups()
         trade_date = f"{y} оны {int(m)} дүгээр сарын {int(d)}-ны өдрийн"
 
-    # Next.js payload-аас шууд хувьцаа/бондын датаг шүүж авах (Regex ашиглан)
-    # Nested биш хавтгай JSON объект тул хамгийн найдвартай арга нь энэ юм
     pattern = r'\{[^{}]*?"(?:companySymbol|bondSymbol)"[^{}]*?\}'
     matches = re.findall(pattern, html)
     
     data = []
     for m in matches:
         try:
-            # HTML escape цэвэрлэх
             clean_json = m.replace('\\"', '"').replace('\\\\', '\\')
             obj = json.loads(clean_json)
             
@@ -67,20 +63,31 @@ def fetch_mse_data():
             volume = float(volume_str) if volume_str else 0.0
             
             if turnover > 0:
+                # 📌 ТӨРЛҮҮДИЙГ ЯЛГАХ
+                code_val = obj.get("code", 0)
+                is_bond = "bondSymbol" in obj
+                is_block = "OpeningPrice" not in obj and not is_bond
+                is_abs = isinstance(code_val, int) and code_val >= 5000
+                
+                if is_bond: trade_type = "Компанийн бонд"
+                elif is_block: trade_type = "Багцын арилжаа"
+                elif is_abs: trade_type = "ХБҮЦ"
+                else: trade_type = "Хувьцаа & Сан"
+
                 data.append({
                     "Тикер": ticker,
                     "Дүн": turnover,
                     "Ширхэг": volume,
-                    "Өөрчлөлт": change
+                    "Өөрчлөлт": change,
+                    "Төрөл": trade_type
                 })
         except Exception:
             continue
             
     df = pd.DataFrame(data)
     
-    # Хэрэв дата хоосон биш бол адилхан тикертэй (жишээ нь багцын арилжаа + энгийн) дүнг нэгтгэх
     if not df.empty:
-        df = df.groupby(['Тикер', 'Өөрчлөлт'], as_index=False).agg({'Дүн': 'sum', 'Ширхэг': 'sum'})
+        df = df.groupby(['Тикер', 'Өөрчлөлт', 'Төрөл'], as_index=False).agg({'Дүн': 'sum', 'Ширхэг': 'sum'})
         
     return df, trade_date
 
@@ -126,22 +133,36 @@ def generate_summary_text(df, trade_date):
     total_amount = df['Дүн'].sum()
     total_qty = df['Ширхэг'].sum()
     
-    text = f"📊 *МХБ — {trade_date.upper()} АРИЛЖААНЫ ТОЙМ*\n\n💰 Нийт арилжаа: {total_amount:,.0f} ₮\n📦 Нийт хувьцаа, үнэт цаас: {total_qty:,.0f} ширхэг\n\n"
+    text = f"📊 *МХБ — {trade_date.upper()} АРИЛЖААНЫ ТОЙМ*\n\n"
+    text += f"💰 Нийт арилжаа: {total_amount:,.0f} ₮\n"
+    text += f"📦 Нийт үнэт цаас: {total_qty:,.0f} ширхэг\n\n"
     
+    # 📌 АРИЛЖААНЫ БҮТЦИЙГ ЗАДАЛЖ ХАРУУЛАХ
+    text += "📝 *Арилжааны бүтэц:*\n"
+    grouped = df.groupby('Төрөл')['Дүн'].sum().sort_values(ascending=False)
+    for ttype, amt in grouped.items():
+        emoji = "🏢" if ttype == "Багцын арилжаа" else "📄" if ttype == "Компанийн бонд" else "📜" if ttype == "ХБҮЦ" else "📈"
+        text += f"▪️ {emoji} {ttype}: {amt:,.0f} ₮\n"
+    
+    # 🏆 TOP 10 (Ард нь ямар төрлийн арилжаа болохыг хаалтанд бичиж өгнө)
+    text += "\n🏆 *Хамгийн их үнийн дүнтэй TOP 10:*\n"
     top10 = df.sort_values('Дүн', ascending=False).head(10)
-    text += "🏆 *Хамгийн их үнийн дүнтэй TOP 10:*\n"
     for i, (_, r) in enumerate(top10.iterrows(), 1): 
-        text += f"{i}. {r['Тикер']} — {r['Дүн']:,.0f} ₮\n"
+        tag = f" _({r['Төрөл']})_" if r['Төрөл'] != "Хувьцаа & Сан" else ""
+        text += f"{i}. {r['Тикер']} — {r['Дүн']:,.0f} ₮{tag}\n"
             
-    gainers = df[df['Өөрчлөлт'] > 0].sort_values('Өөрчлөлт', ascending=False).head(3)
-    losers = df[df['Өөрчлөлт'] < 0].sort_values('Өөрчлөлт', ascending=True).head(3)
-    
-    if not gainers.empty:
-        text += "\n📈 *Хамгийн их өсөлттэй:*\n"
-        for _, r in gainers.iterrows(): text += f"🟩 {r['Тикер']} +{r['Өөрчлөлт']}%\n"
-    if not losers.empty:
-        text += "\n📉 *Хамгийн их бууралттай:*\n"
-        for _, r in losers.iterrows(): text += f"🟥 {r['Тикер']} {r['Өөрчлөлт']}%\n"
+    # Өсөлт бууралтыг зөвхөн энгийн Хувьцаан дээр гаргах
+    stocks_df = df[df['Төрөл'] == "Хувьцаа & Сан"]
+    if not stocks_df.empty:
+        gainers = stocks_df[stocks_df['Өөрчлөлт'] > 0].sort_values('Өөрчлөлт', ascending=False).head(3)
+        losers = stocks_df[stocks_df['Өөрчлөлт'] < 0].sort_values('Өөрчлөлт', ascending=True).head(3)
+        
+        if not gainers.empty:
+            text += "\n📈 *Хамгийн их өсөлттэй:*\n"
+            for _, r in gainers.iterrows(): text += f"🟩 {r['Тикер']} +{r['Өөрчлөлт']}%\n"
+        if not losers.empty:
+            text += "\n📉 *Хамгийн их бууралттай:*\n"
+            for _, r in losers.iterrows(): text += f"🟥 {r['Тикер']} {r['Өөрчлөлт']}%\n"
             
     return text
 
