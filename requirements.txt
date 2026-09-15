@@ -1,10 +1,7 @@
-requests
-pandas
-numpy
-matplotlib
-squarify
-beautifulsoup4
-lxml
-html5lib
-playwright
-nest_asyncio
+requests==2.32.3
+pandas==2.2.3
+numpy==2.2.0
+matplotlib==3.10.0
+squarify==0.4.4
+beautifulsoup4==4.12.3
+lxml==5.3.0
