@@ -9,12 +9,11 @@ import matplotlib.pyplot as plt
 import squarify
 import io
 import re
+import json
 import urllib3
 import datetime
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-import asyncio
-from playwright.async_api import async_playwright
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -28,92 +27,65 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 # ==========================================
-# 2. МХБ - ВИРТУАЛ ХӨТЧӨӨР ӨГӨГДӨЛ ТАТАХ
+# 2. МХБ - API (Next.js Payload)-аас дата шууд татах
 # ==========================================
-async def fetch_mse_html_async():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto("https://mse.mn/todays-trade", wait_until="networkidle")
-        await page.wait_for_timeout(3000) # Хүснэгт зурагдахыг хүлээх
-        html = await page.content()
-        await browser.close()
-        return html
-
 def fetch_mse_data():
-    print("🌐 Виртуал хөтчөөр (Playwright) MSE-ээс мэдээлэл татаж байна...")
+    print("🌐 МХБ-ийн датаг далд API өгөгдлөөс татаж байна...")
+    url = "https://mse.mn/todays-trade"
     try:
-        html = asyncio.run(fetch_mse_html_async())
+        r = requests.get(url, headers=HEADERS, verify=False, timeout=20)
+        html = r.text
     except Exception as e:
-        print(f"❌ Виртуал хөтөч нээхэд алдаа гарлаа: {e}")
-        return None, None
-     
+        print(f"❌ МХБ сайттай холбогдоход алдаа гарлаа: {e}")
+        return pd.DataFrame(), "Өнөөдрийн"
+        
+    # Огноо олох
     trade_date = "Өнөөдрийн"
     date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', html)
     if date_match:
         y, m, d = date_match.groups()
         trade_date = f"{y} оны {int(m)} дүгээр сарын {int(d)}-ны өдрийн"
 
-    try: 
-        dfs = pd.read_html(io.StringIO(html))
-    except ValueError: 
-        return None, None
-
-    stock_tables = []
-    # Хүснэгтийн багана дотор доорх түлхүүр үгсийн аль нэг байвал арилжааны хүснэгт гэж үзнэ
-    for df in dfs:
-        cols_str = " ".join(str(c).lower() for c in df.columns)
-        if 'симбол' in cols_str or 'symbol' in cols_str or 'код' in cols_str:
-            stock_tables.append(df)
+    # Next.js payload-аас шууд хувьцаа/бондын датаг шүүж авах (Regex ашиглан)
+    # Nested биш хавтгай JSON объект тул хамгийн найдвартай арга нь энэ юм
+    pattern = r'\{[^{}]*?"(?:companySymbol|bondSymbol)"[^{}]*?\}'
+    matches = re.findall(pattern, html)
+    
+    data = []
+    for m in matches:
+        try:
+            # HTML escape цэвэрлэх
+            clean_json = m.replace('\\"', '"').replace('\\\\', '\\')
+            obj = json.loads(clean_json)
             
-    if not stock_tables: 
-        return None, None
+            ticker = obj.get("companySymbol") or obj.get("bondSymbol", "Тодорхойгүй")
+            turnover_str = str(obj.get("Turnover", "0")).replace(",", "").replace(" ", "")
+            volume_str = str(obj.get("Volume", "0")).replace(",", "").replace(" ", "")
+            change = float(obj.get("changePercentage", 0))
+            
+            turnover = float(turnover_str) if turnover_str else 0.0
+            volume = float(volume_str) if volume_str else 0.0
+            
+            if turnover > 0:
+                data.append({
+                    "Тикер": ticker,
+                    "Дүн": turnover,
+                    "Ширхэг": volume,
+                    "Өөрчлөлт": change
+                })
+        except Exception:
+            continue
+            
+    df = pd.DataFrame(data)
     
-    return stock_tables, trade_date
-
-# ==========================================
-# 3. МХБ - МЭДЭЭЛЭЛ ЦЭВЭРЛЭХ & ТООЦООЛОХ
-# ==========================================
-def clean_df(df):
-    if df is None or df.empty: return pd.DataFrame()
-    cols = [" ".join(str(x).strip() for x in c if str(x).strip() and 'Unnamed' not in str(x)).lower() if isinstance(c, tuple) else str(c).strip().lower() for c in df.columns]
-    df.columns = cols
-    
-    symbol_col = next((c for c in df.columns if 'симбол' in c or 'symbol' in c), None)
-    amount_col = next((c for c in df.columns if 'мөнгөн дүн' in c or 'үнийн дүн' in c), None)
-    qty_col = next((c for c in df.columns if 'ширхэг' in c or 'quantity' in c), None)
-    prev_col = next((c for c in df.columns if 'өмнөх' in c), None)
-    close_col = next((c for c in df.columns if 'хаалтын' in c), None)
-    
-    # Зарим бонд эсвэл блок арилжаанд Симбол биш Код гэж байх магадлалтай
-    if not symbol_col:
-        symbol_col = next((c for c in df.columns if 'код' in c), None)
+    # Хэрэв дата хоосон биш бол адилхан тикертэй (жишээ нь багцын арилжаа + энгийн) дүнг нэгтгэх
+    if not df.empty:
+        df = df.groupby(['Тикер', 'Өөрчлөлт'], as_index=False).agg({'Дүн': 'sum', 'Ширхэг': 'sum'})
         
-    if not symbol_col or not amount_col: return pd.DataFrame()
-    
-    def parse_amount(val):
-        if pd.isna(val) or str(val).strip() == '-': return 0.0
-        match = re.search(r'-?\d+\.?\d*', str(val).replace(',', '').replace(' ', ''))
-        return float(match.group()) if match else 0.0
-            
-    res = pd.DataFrame()
-    res['Тикер'] = df[symbol_col].astype(str)
-    res['Дүн'] = df[amount_col].apply(parse_amount)
-    res['Ширхэг'] = df[qty_col].apply(parse_amount) if qty_col else 0.0
-    
-    if prev_col and close_col:
-        prev_prices = df[prev_col].apply(parse_amount)
-        close_prices = df[close_col].apply(parse_amount)
-        res['Өөрчлөлт'] = np.where(prev_prices > 0, ((close_prices - prev_prices) / prev_prices) * 100, 0.0)
-        res['Өөрчлөлт'] = res['Өөрчлөлт'].round(2)
-    else: 
-        res['Өөрчлөлт'] = 0.0
-    
-    res = res[~res['Тикер'].isin(['nan', 'None', ''])]
-    return res[res['Дүн'] > 0]
+    return df, trade_date
 
 # ==========================================
-# 4. МХБ - ЗУРАГ БЭЛТГЭХ
+# 3. МХБ - ЗУРАГ БЭЛТГЭХ
 # ==========================================
 def create_heatmap(df, title):
     if df.empty: return None
@@ -130,7 +102,7 @@ def create_heatmap(df, title):
         label = row['Тикер'] if ratio < 0.02 else f"{row['Тикер']}\n{sign}{row['Өөрчлөлт']}%\n{row['Дүн']:,.0f} ₮"
         ax.text(rect['x'] + rect['dx']/2, rect['y'] + rect['dy']/2, label, ha='center', va='center', fontsize=font_size, color='white', fontweight='bold')
 
-    # Watermark 
+    # Watermark
     fig.text(0.5, 0.5, 'Ganbayar Batsuuri', fontsize=40, color='grey', ha='center', va='center', alpha=0.15, rotation=30)
     
     plt.title(title, fontsize=16, fontweight='bold', pad=20)
@@ -145,24 +117,24 @@ def create_heatmap(df, title):
     return buf
 
 # ==========================================
-# 5. МХБ - ТЕКСТ ТОЙМ БЭЛТГЭХ
+# 4. МХБ - ТЕКСТ ТОЙМ БЭЛТГЭХ
 # ==========================================
-def generate_summary_text(combined_df, trade_date):
-    if combined_df.empty:
-        return "📊 Өгөгдөл олдсонгүй."
+def generate_summary_text(df, trade_date):
+    if df.empty:
+        return "📊 Өнөөдрийн арилжааны дата олдсонгүй эсвэл арилжаа явагдаагүй байна."
         
-    total_amount = combined_df['Дүн'].sum()
-    total_qty = combined_df['Ширхэг'].sum()
+    total_amount = df['Дүн'].sum()
+    total_qty = df['Ширхэг'].sum()
     
-    text = f"📊 *МХБ — {trade_date.upper()} АРИЛЖААНЫ ТОЙМ*\n\n💰 Нийт арилжаа: {total_amount:,.0f} ₮\n📦 Нийт хувьцаа: {total_qty:,.0f} ширхэг\n\n"
+    text = f"📊 *МХБ — {trade_date.upper()} АРИЛЖААНЫ ТОЙМ*\n\n💰 Нийт арилжаа: {total_amount:,.0f} ₮\n📦 Нийт хувьцаа, үнэт цаас: {total_qty:,.0f} ширхэг\n\n"
     
-    top10 = combined_df.sort_values('Дүн', ascending=False).head(10)
+    top10 = df.sort_values('Дүн', ascending=False).head(10)
     text += "🏆 *Хамгийн их үнийн дүнтэй TOP 10:*\n"
     for i, (_, r) in enumerate(top10.iterrows(), 1): 
         text += f"{i}. {r['Тикер']} — {r['Дүн']:,.0f} ₮\n"
             
-    gainers = combined_df[combined_df['Өөрчлөлт'] > 0].sort_values('Өөрчлөлт', ascending=False).head(3)
-    losers = combined_df[combined_df['Өөрчлөлт'] < 0].sort_values('Өөрчлөлт', ascending=True).head(3)
+    gainers = df[df['Өөрчлөлт'] > 0].sort_values('Өөрчлөлт', ascending=False).head(3)
+    losers = df[df['Өөрчлөлт'] < 0].sort_values('Өөрчлөлт', ascending=True).head(3)
     
     if not gainers.empty:
         text += "\n📈 *Хамгийн их өсөлттэй:*\n"
@@ -174,7 +146,7 @@ def generate_summary_text(combined_df, trade_date):
     return text
 
 # ==========================================
-# 6. COMEX - ХҮСНЭГТ ЗАДАЛЖ УНШИХ
+# 5. COMEX - ХҮСНЭГТ ЗАДАЛЖ УНШИХ
 # ==========================================
 def parse_comex_table(url, date_str):
     try:
@@ -287,7 +259,7 @@ def fetch_comex_news():
     return None
 
 # ==========================================
-# 7. TELEGRAM-Д ИЛГЭЭХ & ҮНДСЭН ҮЙЛДЭЛ
+# 6. TELEGRAM-Д ИЛГЭЭХ & ҮНДСЭН ҮЙЛДЭЛ
 # ==========================================
 def send_telegram_photo(photo_buf, caption=""):
     if not BOT_TOKEN:
@@ -309,21 +281,18 @@ def main():
         print("⚠️ АНХААР: BOT_TOKEN хоосон байна! Secrets тохиргоогоо шалгана уу.")
     
     # 1. МХБ МЭДЭЭЛЭЛ
-    raw_tables, trade_date = fetch_mse_data()
-    if raw_tables:
+    mse_df, trade_date = fetch_mse_data()
+    
+    if not mse_df.empty:
         print(f"🧹 МХБ Мэдээллийг боловсруулж байна... ({trade_date})")
         
-        cleaned_dfs_list = [clean_df(df) for df in raw_tables if not df.empty]
-        combined_df = pd.concat(cleaned_dfs_list, ignore_index=True) if cleaned_dfs_list else pd.DataFrame()
+        # Нийт арилжааны текст мэдээлэл илгээх
+        send_telegram_message(generate_summary_text(mse_df, trade_date))
         
-        # Бүх зах зээлийн нэгтгэсэн текст
-        send_telegram_message(generate_summary_text(combined_df, trade_date))
-        
-        # Бүх хувьцааны Heatmap (Эхний зураг байх болно)
-        if not combined_df.empty:
-            heatmap_buf = create_heatmap(combined_df, f"МХБ НЭГДСЭН ЗУРАГ ({trade_date})")
-            if heatmap_buf:
-                send_telegram_photo(heatmap_buf, f"📊 МХБ-ийн бүх самбарын хөдөлгөөн")
+        # Бүх хувьцааны Heatmap зураг
+        heatmap_buf = create_heatmap(mse_df, f"МХБ НЭГДСЭН ЗУРАГ ({trade_date})")
+        if heatmap_buf:
+            send_telegram_photo(heatmap_buf, f"📊 МХБ-ийн бүх арилжааны хөдөлгөөн")
                 
         print("✅ МХБ-ийн пост амжилттай орлоо.")
 
